@@ -160,7 +160,7 @@ bool CobTwistController::initialize()
         twist_controller_params_.frame_names.push_back(chain_.getSegment(i).getName());
     }
     register_link_client_ = nh_.serviceClient<cob_srvs::SetString>("obstacle_distance/registerLinkOfInterest");
-    register_link_client_.waitForExistence(ros::Duration(5.0));
+    register_link_client_.waitForExistence(ros::Duration(1.0));
     twist_controller_params_.constraint_ca = CA_OFF;
 
     /// initialize configuration control solver
@@ -184,22 +184,31 @@ bool CobTwistController::initialize()
     ros::Duration(1.0).sleep();
 
     /// initialize ROS interfaces
+    /* From old code, clean out soon */
     obstacle_distance_sub_ = nh_.subscribe("obstacle_distance", 1, &CallbackDataMediator::distancesToObstaclesCallback, &callback_data_mediator_);
-    jointstate_sub_ = nh_.subscribe("/joint_states", 1, &CobTwistController::jointstateCallback, this);
-    twist_sub_ = nh_twist.subscribe("command_twist", 1, &CobTwistController::twistCallback, this);
-    twist_stamped_sub_ = nh_twist.subscribe("command_twist_stamped", 1, &CobTwistController::twistStampedCallback, this);
 
-    odometry_sub_ = nh_.subscribe("base/odometry", 1, &CobTwistController::odometryCallback, this);
+    /********** SUBSCRIBERS for task-space commands and current joint states!! **********/
+    jointstate_sub_    = nh_.subscribe("/joint_states", 1, &CobTwistController::jointstateCallback, this);
+    jointvelocity_sub_ = nh_.subscribe("/cobot/current_joint_velocity", 1, &CobTwistController::jointvelocityCallback, this);
+    twist_sub_         = nh_twist.subscribe("/cobot/twist_controller/command_twist", 1, &CobTwistController::twistCallback, this);
+    // twist_stamped_sub_ = nh_twist.subscribe("command_twist_stamped", 1, &CobTwistController::twistStampedCallback, this);
+
+    // odometry_sub_ = nh_.subscribe("base/odometry", 1, &CobTwistController::odometryCallback, this);
 
     /********** PUBLISHEEEERS for joint commands **********/
     twist_direction_pub_  = nh_.advertise<visualization_msgs::MarkerArray>("twist_direction", 1);
     ee_pose_pub_          = nh_.advertise<geometry_msgs::Pose>("/cobot/ee_pose", 1);
-    ee_twist_pub_          = nh_.advertise<geometry_msgs::Twist>("/cobot/ee_twist", 1);
-    velocity_command_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("/cobot/desired_velocity_command", 1);
+    ee_twist_pub_         = nh_.advertise<geometry_msgs::Twist>("/cobot/ee_twist", 1);
+
+    /* This one goes to the filter */
+    velocity_command_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("/cobot/desired_joint_velocity", 1);
+
+    /* This one goes directly to the driver */
+    // velocity_command_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("/joint_group_velocity_controller/command", 1);    
 
     // can filter after this....
     // position_command_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("/cobot/desired_position_command", 1);
-    position_command_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("/joint_group_position_controller/command", 1);
+    // position_command_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("/joint_group_position_controller/command", 1);
 
 
     ROS_INFO_STREAM(nh_.getNamespace() << "/twist_controller...initialized!");
@@ -442,6 +451,9 @@ void CobTwistController::twistStampedCallback(const geometry_msgs::TwistStamped:
 /// Orientation of twist_msg is with respect to chain_base coordinate system
 void CobTwistController::twistCallback(const geometry_msgs::Twist::ConstPtr& msg)
 {
+
+    ROS_INFO_STREAM_THROTTLE(0.1,"receieved desired ee twist! ");
+
     KDL::Twist twist;
     tf::twistMsgToKDL(*msg, twist);
     solveTwist(twist);
@@ -453,7 +465,7 @@ void CobTwistController::solveTwist(KDL::Twist twist)
     ros::Time start, end;
     start = ros::Time::now();
 
-    visualizeTwist(twist);
+    // visualizeTwist(twist);
 
     KDL::JntArray q_dot_ik(chain_.getNrOfJoints());
 
@@ -475,19 +487,23 @@ void CobTwistController::solveTwist(KDL::Twist twist)
 
         /* Extract joint velocity values from KDL JntArray */
         msg_desired_joint_velocity_.data.clear();
-        msg_desired_joint_position_.data.clear();
-        double dt = 0.006;
-        for(unsigned int it = 0; it < chain_.getNrOfJoints(); ++it){
+        for(unsigned int it = 0; it < chain_.getNrOfJoints(); ++it)
             msg_desired_joint_velocity_.data.push_back(q_dot_ik(it));
 
-            double joint_pos_it  = 0.0;
-            joint_pos_it  = this->joint_states_.current_q_(it) + 10*q_dot_ik(it)*dt;
-            msg_desired_joint_position_.data.push_back(joint_pos_it);
-        }
-
         velocity_command_pub_.publish(msg_desired_joint_velocity_);
-        position_command_pub_.publish(msg_desired_joint_position_);
+        ROS_INFO_STREAM("desired joint velocities: " << q_dot_ik(0) << " " << q_dot_ik(1) << " " << q_dot_ik(2) << " " << q_dot_ik(3) << " " << q_dot_ik(4) << " " << q_dot_ik(5));
 
+        /* Compute joint positions for direct position control mode, doesn't work on real robot, send trapezoidal command */
+        // msg_desired_joint_position_.data.clear();
+        // double dt = 0.0035;
+        // for(unsigned int it = 0; it < chain_.getNrOfJoints(); ++it){
+        //     double joint_pos_it  = 0.0;
+        //     joint_pos_it  = this->joint_states_.current_q_(it) + 5*q_dot_ik(it)*dt;
+        //     msg_desired_joint_position_.data.push_back(joint_pos_it);
+        // }
+        // position_command_pub_.publish(msg_desired_joint_position_);
+
+        /* From old code */
         // this->controller_interface_->processResult(q_dot_ik, this->joint_states_.current_q_);
     }
 
@@ -503,6 +519,7 @@ void CobTwistController::visualizeTwist(KDL::Twist twist)
         tracking_frame = "lookat_focus_frame";
     }
 
+    tracking_frame = "grasping_point_link";
     tf::StampedTransform transform_tf;
     try
     {
@@ -515,7 +532,8 @@ void CobTwistController::visualizeTwist(KDL::Twist twist)
     }
 
     visualization_msgs::Marker marker_vel;
-    marker_vel.header.frame_id = twist_controller_params_.chain_base_link;
+    // marker_vel.header.frame_id = twist_controller_params_.chain_base_link;
+    marker_vel.header.frame_id = "grasping_point_link";
     marker_vel.header.stamp = ros::Time::now();
     marker_vel.ns = "twist_vel";
     marker_vel.id = 0;
@@ -537,12 +555,17 @@ void CobTwistController::visualizeTwist(KDL::Twist twist)
     marker_vel.points[0].x = transform_tf.getOrigin().x();
     marker_vel.points[0].y = transform_tf.getOrigin().y();
     marker_vel.points[0].z = transform_tf.getOrigin().z();
-    marker_vel.points[1].x = transform_tf.getOrigin().x() + 5.0 * twist.vel.x();
-    marker_vel.points[1].y = transform_tf.getOrigin().y() + 5.0 * twist.vel.y();
-    marker_vel.points[1].z = transform_tf.getOrigin().z() + 5.0 * twist.vel.z();
+    // marker_vel.points[1].x = transform_tf.getOrigin().x() + 5.0 * twist.vel.x();
+    // marker_vel.points[1].y = transform_tf.getOrigin().y() + 5.0 * twist.vel.y();
+    // marker_vel.points[1].z = transform_tf.getOrigin().z() + 5.0 * twist.vel.z();
+    marker_vel.points[1].x = transform_tf.getOrigin().x() + 0.1 * twist.vel.x();
+    marker_vel.points[1].y = transform_tf.getOrigin().y() + 0.1 * twist.vel.y();
+    marker_vel.points[1].z = transform_tf.getOrigin().z() + 0.1 * twist.vel.z();
+
 
     visualization_msgs::Marker marker_rot;
-    marker_rot.header.frame_id = twist_controller_params_.chain_base_link;
+    // marker_rot.header.frame_id = twist_controller_params_.chain_base_link;
+    marker_rot.header.frame_id = "grasping_point_link";
     marker_rot.header.stamp = ros::Time::now();
     marker_rot.ns = "twist_rot";
     marker_rot.id = 0;
@@ -599,22 +622,22 @@ void CobTwistController::jointstateCallback(const sensor_msgs::JointState::Const
             if (strcmp(msg->name[i].c_str(), twist_controller_params_.joints[j].c_str()) == 0)
             {
                 q_temp(j) = msg->position[i];
-                q_dot_temp(j) = msg->velocity[i];
+                // q_dot_temp(j) = msg->velocity[i];
                 count++;
                 break;
             }
         }
     }
 
-    ROS_INFO_STREAM("joint positions: " << q_temp(0) << " " << q_temp(1) << " " << q_temp(2) << " " << q_temp(3) << " " << q_temp(4) << " " << q_temp(5));
-    ROS_INFO_STREAM("joint velocities: " << q_dot_temp(0) << " " << q_dot_temp(1) << " " << q_dot_temp(2) << " " << q_dot_temp(3) << " " << q_dot_temp(4) << " " << q_dot_temp(5));
+    ROS_INFO_STREAM_THROTTLE(0.1,"current joint positions: " << q_temp(0) << " " << q_temp(1) << " " << q_temp(2) << " " << q_temp(3) << " " << q_temp(4) << " " << q_temp(5));
+    // ROS_INFO_STREAM("current joint velocities: " << q_dot_temp(0) << " " << q_dot_temp(1) << " " << q_dot_temp(2) << " " << q_dot_temp(3) << " " << q_dot_temp(4) << " " << q_dot_temp(5));
 
     if (count == twist_controller_params_.joints.size())
     {
         this->joint_states_.last_q_ = joint_states_.current_q_;
-        this->joint_states_.last_q_dot_ = joint_states_.current_q_dot_;
+        // this->joint_states_.last_q_dot_ = joint_states_.current_q_dot_;
         this->joint_states_.current_q_ = q_temp;
-        this->joint_states_.current_q_dot_ = q_dot_temp;
+        // this->joint_states_.current_q_dot_ = q_dot_temp;
     }
 
     // ******** Compute FK to publish ee_pose ******** //
@@ -633,11 +656,7 @@ void CobTwistController::jointstateCallback(const sensor_msgs::JointState::Const
     Eigen::Vector4d ee_quat_(quat_x, quat_y, quat_z, quat_w);
 
     if(kinematics_status >= 0){
-        // ROS_INFO_STREAM("KDL cartesian pose is: \n" );
-        // std::cout << ee_pos_(0)<< " "<< ee_pos_(1)<< " "<< ee_pos_(2)<<std::endl;
-        // std::cout << ee_quat_(0)   << " "<< ee_quat_(1) <<" "<< ee_quat_(2)<< " " << ee_quat_(2) <<std::endl;
-        // std::cout << cartpos <<std::endl;
-        // printf("%s \n","Succes, thanks KDL!");
+
     }else{
         // ROS_ERROR("%s \n","Error: could not calculate forward kinematics")
         printf("%s \n","Error: could not calculate forward kinematics :(");
@@ -656,6 +675,32 @@ void CobTwistController::jointstateCallback(const sensor_msgs::JointState::Const
 
     ee_pose_pub_.publish(msg_ee_pose_);
 
+}
+
+void CobTwistController::jointvelocityCallback(const std_msgs::Float64MultiArray::ConstPtr& msg)
+{
+    
+
+    // ROS_INFO_STREAM("current joint velocities: " << msg->data[0] << " " << msg->data[1] << " " << msg->data[2] << " " << msg->data[3] << " " << msg->data[4] << " " << msg->data[0]);
+
+    // KDL::JntArray q_temp = this->joint_states_.current_q_;
+    KDL::JntArray q_dot_temp = this->joint_states_.current_q_dot_;
+    int count = 0;
+
+    for (uint16_t j = 0; j < twist_controller_params_.dof; j++){
+        q_dot_temp(j) = msg->data[j];
+        count++;
+    }
+
+    ROS_INFO_STREAM_THROTTLE(0.1,"current joint velocities: " << q_dot_temp(0) << " " << q_dot_temp(1) << " " << q_dot_temp(2) << " " << q_dot_temp(3) << " " << q_dot_temp(4) << " " << q_dot_temp(5));
+
+    if (count == twist_controller_params_.joints.size())
+    {
+        // this->joint_states_.last_q_ = joint_states_.current_q_;
+        this->joint_states_.last_q_dot_ = joint_states_.current_q_dot_;
+        // this->joint_states_.current_q_ = q_temp;
+        this->joint_states_.current_q_dot_ = q_dot_temp;
+    }
     // ******** Compute FK to publish ee_pose and ee_twist******** //
     KDL::JntArrayVel q_qdot_curr;
     q_qdot_curr.q = this->joint_states_.current_q_;
@@ -668,10 +713,8 @@ void CobTwistController::jointstateCallback(const sensor_msgs::JointState::Const
     bool kinematics_status_vel;
     kinematics_status_vel = fksolver_vel.JntToCart(q_qdot_curr,cartpose_twist);
     KDL::Twist curr_twist = cartpose_twist.GetTwist();
-    // Linear velocity
-    std::cout << curr_twist.vel.x()<< " "<< curr_twist.vel.y()<< " "<< curr_twist.vel.z()<<std::endl;
-    // Angular velocity
-    std::cout << curr_twist.rot.x()<< " "<< curr_twist.rot.y()<< " "<< curr_twist.rot.z()<<std::endl;
+
+    ROS_INFO_STREAM_THROTTLE(0.1,"current ee twist: " << curr_twist.vel.x()<< " "<< curr_twist.vel.y()<< " "<< curr_twist.vel.z()<< " "<< curr_twist.rot.x()<< " "<< curr_twist.rot.y()<< " "<< curr_twist.rot.z());
 
     // ******** Publish ee_twist ******** //
     // msg_ee_pose_.header.stamp    = ros::Time::now();
@@ -683,68 +726,53 @@ void CobTwistController::jointstateCallback(const sensor_msgs::JointState::Const
     msg_ee_twist_.angular.z = curr_twist.rot.z();
 
     ee_twist_pub_.publish(msg_ee_twist_);
-
     
 }
 
-// void CDDynamicsTwistFilter::PublishDesiredVelocities() {
 
-//     // msg_ee_pose_.header.stamp    = ros::Time::now();
-//     msg_ee_pose_.linear.x  = desired_velocity_filtered_lin_(0);
-//     msg_ee_pose_.linear.y  = desired_velocity_filtered_lin_(1);
-//     msg_ee_pose_.linear.z  = desired_velocity_filtered_lin_(2);
-//     msg_ee_pose_.angular.x = desired_velocity_filtered_ang_(0);
-//     msg_ee_pose_.angular.y = desired_velocity_filtered_ang_(1);
-//     msg_ee_pose_.angular.z = desired_velocity_filtered_ang_(2);
 
-//     pub_ee_pose_.publish(msg_ee_pose_);
+// void CobTwistController::odometryCallback(const nav_msgs::Odometry::ConstPtr& msg)
+// {
+//     KDL::Twist twist_odometry_bl, tangential_twist_bl, twist_odometry_transformed_cb;
+//     KDL::Frame cb_frame_bl;
+//     tf::StampedTransform cb_transform_bl, bl_transform_ct;
 
+//     try
+//     {
+//         tf_listener_.waitForTransform(twist_controller_params_.chain_base_link, "base_link", ros::Time(0), ros::Duration(0.5));
+//         tf_listener_.lookupTransform(twist_controller_params_.chain_base_link, "base_link", ros::Time(0), cb_transform_bl);
+
+//         tf_listener_.waitForTransform("base_link", twist_controller_params_.chain_tip_link, ros::Time(0), ros::Duration(0.5));
+//         tf_listener_.lookupTransform("base_link", twist_controller_params_.chain_tip_link, ros::Time(0), bl_transform_ct);
+
+//         cb_frame_bl.p = KDL::Vector(cb_transform_bl.getOrigin().x(), cb_transform_bl.getOrigin().y(), cb_transform_bl.getOrigin().z());
+//         cb_frame_bl.M = KDL::Rotation::Quaternion(cb_transform_bl.getRotation().x(), cb_transform_bl.getRotation().y(), cb_transform_bl.getRotation().z(), cb_transform_bl.getRotation().w());
+//     }
+//     catch (tf::TransformException& ex)
+//     {
+//         ROS_ERROR("CobTwistController::odometryCallback: \n%s", ex.what());
+//         return;
+//     }
+
+//     try
+//     {
+//         // Calculate tangential twist for angular base movements v = w x r
+//         Eigen::Vector3d r(bl_transform_ct.getOrigin().x(), bl_transform_ct.getOrigin().y(), bl_transform_ct.getOrigin().z());
+//         Eigen::Vector3d w(0, 0, msg->twist.twist.angular.z);
+//         Eigen::Vector3d res = w.cross(r);
+//         tangential_twist_bl.vel = KDL::Vector(res(0), res(1), res(2));
+//         tangential_twist_bl.rot = KDL::Vector(0, 0, 0);
+//     }
+//     catch(...)
+//     {
+//         ROS_ERROR("Error occurred while calculating tangential twist for angular base movements.");
+//         return;
+//     }
+
+//     tf::twistMsgToKDL(msg->twist.twist, twist_odometry_bl);  // Base Twist
+
+//     // transform into chain_base
+//     twist_odometry_transformed_cb = cb_frame_bl * (twist_odometry_bl + tangential_twist_bl);
+
+//     twist_odometry_cb_ = twist_odometry_transformed_cb;
 // }
-
-
-
-void CobTwistController::odometryCallback(const nav_msgs::Odometry::ConstPtr& msg)
-{
-    KDL::Twist twist_odometry_bl, tangential_twist_bl, twist_odometry_transformed_cb;
-    KDL::Frame cb_frame_bl;
-    tf::StampedTransform cb_transform_bl, bl_transform_ct;
-
-    try
-    {
-        tf_listener_.waitForTransform(twist_controller_params_.chain_base_link, "base_link", ros::Time(0), ros::Duration(0.5));
-        tf_listener_.lookupTransform(twist_controller_params_.chain_base_link, "base_link", ros::Time(0), cb_transform_bl);
-
-        tf_listener_.waitForTransform("base_link", twist_controller_params_.chain_tip_link, ros::Time(0), ros::Duration(0.5));
-        tf_listener_.lookupTransform("base_link", twist_controller_params_.chain_tip_link, ros::Time(0), bl_transform_ct);
-
-        cb_frame_bl.p = KDL::Vector(cb_transform_bl.getOrigin().x(), cb_transform_bl.getOrigin().y(), cb_transform_bl.getOrigin().z());
-        cb_frame_bl.M = KDL::Rotation::Quaternion(cb_transform_bl.getRotation().x(), cb_transform_bl.getRotation().y(), cb_transform_bl.getRotation().z(), cb_transform_bl.getRotation().w());
-    }
-    catch (tf::TransformException& ex)
-    {
-        ROS_ERROR("CobTwistController::odometryCallback: \n%s", ex.what());
-        return;
-    }
-
-    try
-    {
-        // Calculate tangential twist for angular base movements v = w x r
-        Eigen::Vector3d r(bl_transform_ct.getOrigin().x(), bl_transform_ct.getOrigin().y(), bl_transform_ct.getOrigin().z());
-        Eigen::Vector3d w(0, 0, msg->twist.twist.angular.z);
-        Eigen::Vector3d res = w.cross(r);
-        tangential_twist_bl.vel = KDL::Vector(res(0), res(1), res(2));
-        tangential_twist_bl.rot = KDL::Vector(0, 0, 0);
-    }
-    catch(...)
-    {
-        ROS_ERROR("Error occurred while calculating tangential twist for angular base movements.");
-        return;
-    }
-
-    tf::twistMsgToKDL(msg->twist.twist, twist_odometry_bl);  // Base Twist
-
-    // transform into chain_base
-    twist_odometry_transformed_cb = cb_frame_bl * (twist_odometry_bl + tangential_twist_bl);
-
-    twist_odometry_cb_ = twist_odometry_transformed_cb;
-}

@@ -62,17 +62,18 @@ private:
     ros::NodeHandle nh_;
 
     ros::Subscriber jointstate_sub_;
+    ros::Subscriber jointvelocity_sub_;
 
     ros::Subscriber twist_sub_;
     ros::Subscriber twist_stamped_sub_;
 
-    ros::Subscriber odometry_sub_;
+    // ros::Subscriber odometry_sub_;
 
     ros::Publisher twist_direction_pub_;
     ros::Publisher ee_pose_pub_;
     ros::Publisher ee_twist_pub_;
     ros::Publisher velocity_command_pub_;
-    ros::Publisher position_command_pub_;
+    // ros::Publisher position_command_pub_;
 
     // New additions
     geometry_msgs::Pose msg_ee_pose_;
@@ -118,7 +119,8 @@ public:
     void reconfigureCallback(cob_twist_controller::TwistControllerConfig& config, uint32_t level);
     void checkSolverAndConstraints(cob_twist_controller::TwistControllerConfig& config);
     void jointstateCallback(const sensor_msgs::JointState::ConstPtr& msg);
-    void odometryCallback(const nav_msgs::Odometry::ConstPtr& msg);
+    void jointvelocityCallback(const std_msgs::Float64MultiArray::ConstPtr& msg);
+    // void odometryCallback(const nav_msgs::Odometry::ConstPtr& msg);
 
     void twistCallback(const geometry_msgs::Twist::ConstPtr& msg);
     void twistStampedCallback(const geometry_msgs::TwistStamped::ConstPtr& msg);
