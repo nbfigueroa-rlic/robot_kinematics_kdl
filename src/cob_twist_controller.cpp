@@ -645,11 +645,20 @@ void CobTwistController::jointstateCallback(const sensor_msgs::JointState::Const
     KDL::ChainFkSolverPos_recursive fksolver = KDL::ChainFkSolverPos_recursive(chain_);
     
     // Create the frame that will contain the results
-    KDL::Frame cartpos; 
+    KDL::Frame cartpos, cartpos_; 
+
+    // Tranform for link6->grasping_point_link
+    KDL::Frame ee_transform(KDL::Frame::Identity());     
+    ee_transform.p = KDL::Vector(0, 0, 0.21);
 
     // Calculate forward position kinematics
     bool kinematics_status;
-    kinematics_status = fksolver.JntToCart(q_temp,cartpos);
+    kinematics_status = fksolver.JntToCart(q_temp,cartpos_);
+
+    // Add offset
+    cartpos = cartpos_ * ee_transform;
+
+    // Extract final position and orientation to publish
     Eigen::Vector3d ee_pos_(cartpos.p.x(), cartpos.p.y(), cartpos.p.z());
     double quat_x, quat_y, quat_z, quat_w;
     cartpos.M.GetQuaternion(quat_x, quat_y, quat_z, quat_w);
